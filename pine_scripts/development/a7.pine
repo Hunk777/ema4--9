@@ -1,0 +1,365 @@
+//@version=6
+strategy("Real-Time EMA Cross Strategy For Scalping v7",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         calc_on_every_tick=true,
+         process_orders_on_close=true,
+         pyramiding=0,
+         close_entries_rule="ANY",
+         max_lines_count=50)
+
+// EMA設定
+fast_ema_length = input.int(1, title="Fast EMA", minval=1)
+standard_ema_length = input.int(10, title="Standard EMA", minval=1)
+
+// リアルタイム実行設定
+use_realtime = input.bool(true, title="Real-time Execution", tooltip="Uncheck to execute only on bar close")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロス設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SL1: EMAクロス価格ベース
+enable_sl1 = input.bool(true, title="Enable SL1 (EMA Cross Base)", tooltip="SL1をON/OFFする")
+sl1_offset_percent = input.float(0.100, title="SL1 Offset from EMA Cross (%)", minval=0.001, step=0.001, tooltip="EMAクロス価格からのオフセット%（小数点3位まで）")
+
+// SL2: エントリー価格ベース
+enable_sl2 = input.bool(true, title="Enable SL2 (Entry Price Base)", tooltip="SL2をON/OFFする")
+sl2_offset_percent = input.float(0.200, title="SL2 Offset from Entry Price (%)", minval=0.001, step=0.001, tooltip="エントリー価格からのオフセット%（小数点3位まで）")
+
+// EMA計算
+fast_ema = ta.ema(close, fast_ema_length)
+standard_ema = ta.ema(close, standard_ema_length)
+
+// より正確なクロス判定
+is_long_signal = ta.crossover(fast_ema, standard_ema)
+is_short_signal = ta.crossunder(fast_ema, standard_ema)
+
+// リアルタイムモードの場合の追加条件
+if use_realtime and barstate.isconfirmed == false
+    is_long_signal := fast_ema > standard_ema and fast_ema[1] <= standard_ema[1]
+    is_short_signal := fast_ema < standard_ema and fast_ema[1] >= standard_ema[1]
+
+// ポジション状態
+in_long = strategy.position_size > 0
+in_short = strategy.position_size < 0
+no_position = strategy.position_size == 0
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// エントリー価格を記録する変数
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var float entry_price = na
+var string entry_type = "NONE"
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロス計算用の変数
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var float sl1_price = na              // SL1: EMAクロス価格ベースのストップロス
+var float sl2_price = na              // SL2: エントリー価格ベースのストップロス
+var float ema_cross_price = na        // EMAクロス時の価格
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロスラインオブジェクト（水平線）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var line sl1_line = na  // SL1水平線
+var line sl2_line = na  // SL2水平線
+var line entry_line = na  // エントリー価格水平線
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// エントリー・決済ロジック
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ロングシグナル時の処理
+if is_long_signal
+    if in_short
+        strategy.close("Short", comment="Short Exit→Long Entry", immediately=true)
+        entry_price := na
+        sl1_price := na
+        sl2_price := na
+        ema_cross_price := na
+    // ifブロックでエントリー
+    if true
+        strategy.entry("Long", strategy.long, comment="Long Entry")
+        // エントリー価格とクロス価格を記録
+        entry_price := close
+        ema_cross_price := (fast_ema + standard_ema) / 2  // EMAクロス時の平均価格
+        entry_type := "LONG"
+
+        // SL1: EMAクロス価格からのオフセット（ロングなので下）
+        sl1_price := ema_cross_price * (1 - sl1_offset_percent / 100)
+
+        // SL2: エントリー価格からのオフセット（ロングなので下）
+        sl2_price := entry_price * (1 - sl2_offset_percent / 100)
+
+        // 古いラインを削除
+        if not na(sl1_line)
+            line.delete(sl1_line)
+        if not na(sl2_line)
+            line.delete(sl2_line)
+        if not na(entry_line)
+            line.delete(entry_line)
+
+        // SL1ライン作成（赤色）
+        if enable_sl1
+            sl1_line := line.new(bar_index, sl1_price, bar_index + 500, sl1_price, color=#FF0000, width=2, style=line.style_solid, extend=extend.right)
+
+        // SL2ライン作成（オレンジ色）
+        if enable_sl2
+            sl2_line := line.new(bar_index, sl2_price, bar_index + 500, sl2_price, color=#FF8800, width=2, style=line.style_solid, extend=extend.right)
+
+        // エントリー価格ライン作成（シアン色）
+        entry_line := line.new(bar_index, entry_price, bar_index + 500, entry_price, color=#00FFFF, width=1, style=line.style_dotted, extend=extend.right)
+
+// ショートシグナル時の処理
+if is_short_signal
+    if in_long
+        strategy.close("Long", comment="Long Exit→Short Entry", immediately=true)
+        entry_price := na
+        sl1_price := na
+        sl2_price := na
+        ema_cross_price := na
+    // ifブロックでエントリー
+    if true
+        strategy.entry("Short", strategy.short, comment="Short Entry")
+        // エントリー価格とクロス価格を記録
+        entry_price := close
+        ema_cross_price := (fast_ema + standard_ema) / 2  // EMAクロス時の平均価格
+        entry_type := "SHORT"
+
+        // SL1: EMAクロス価格からのオフセット（ショートなので上）
+        sl1_price := ema_cross_price * (1 + sl1_offset_percent / 100)
+
+        // SL2: エントリー価格からのオフセット（ショートなので上）
+        sl2_price := entry_price * (1 + sl2_offset_percent / 100)
+
+        // 古いラインを削除
+        if not na(sl1_line)
+            line.delete(sl1_line)
+        if not na(sl2_line)
+            line.delete(sl2_line)
+        if not na(entry_line)
+            line.delete(entry_line)
+
+        // SL1ライン作成（赤色）
+        if enable_sl1
+            sl1_line := line.new(bar_index, sl1_price, bar_index + 500, sl1_price, color=#FF0000, width=2, style=line.style_solid, extend=extend.right)
+
+        // SL2ライン作成（オレンジ色）
+        if enable_sl2
+            sl2_line := line.new(bar_index, sl2_price, bar_index + 500, sl2_price, color=#FF8800, width=2, style=line.style_solid, extend=extend.right)
+
+        // エントリー価格ライン作成（シアン色）
+        entry_line := line.new(bar_index, entry_price, bar_index + 500, entry_price, color=#00FFFF, width=1, style=line.style_dotted, extend=extend.right)
+
+// ポジションがない場合はリセット
+if no_position
+    entry_price := na
+    entry_type := "NONE"
+    sl1_price := na
+    sl2_price := na
+    ema_cross_price := na
+    // ラインを削除
+    if not na(sl1_line)
+        line.delete(sl1_line)
+        sl1_line := na
+    if not na(sl2_line)
+        line.delete(sl2_line)
+        sl2_line := na
+    if not na(entry_line)
+        line.delete(entry_line)
+        entry_line := na
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロス計算ロジック（固定価格のため更新不要）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SL1とSL2は両方ともエントリー時に固定価格で設定されます
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロス到達時の自動決済
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ロングポジションのSL決済
+if in_long
+    // SL1到達チェック
+    if enable_sl1 and not na(sl1_price) and close <= sl1_price
+        strategy.close("Long", comment="SL1 Hit")
+        entry_price := na
+    // SL2到達チェック
+    else if enable_sl2 and not na(sl2_price) and close <= sl2_price
+        strategy.close("Long", comment="SL2 Hit")
+        entry_price := na
+
+// ショートポジションのSL決済
+if in_short
+    // SL1到達チェック
+    if enable_sl1 and not na(sl1_price) and close >= sl1_price
+        strategy.close("Short", comment="SL1 Hit")
+        entry_price := na
+    // SL2到達チェック
+    else if enable_sl2 and not na(sl2_price) and close >= sl2_price
+        strategy.close("Short", comment="SL2 Hit")
+        entry_price := na
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ビジュアル表示
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// EMAラインの描画（Fast EMAを少し薄く表示）
+fast_ema_line = plot(fast_ema, color=color.new(#0000FF, 40), linewidth=2, title="Fast EMA")
+standard_ema_line = plot(standard_ema, color=color.new(#FF0000, 0), linewidth=2, title="Standard EMA")
+
+// クロスエリアの塗りつぶし
+fill(fast_ema_line, standard_ema_line,
+     color=fast_ema > standard_ema ? color.new(#00FF00, 80) : color.new(#FF0000, 80),
+     title="EMA Zone")
+
+// シグナルマーカー
+plotshape(is_long_signal,
+          style=shape.triangleup,
+          location=location.belowbar,
+          color=color.new(#00FF00, 0),
+          size=size.small,
+          title="Long Signal",
+          text="L")
+
+plotshape(is_short_signal,
+          style=shape.triangledown,
+          location=location.abovebar,
+          color=color.new(#FF0000, 0),
+          size=size.small,
+          title="Short Signal",
+          text="S")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ストップロスラインの描画（line.new()で描画済み）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SL1, SL2, エントリー価格ラインはline.new()を使用して
+// エントリー時に描画されます
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// アラート設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(is_long_signal,
+               title="Long Entry Alert",
+               message="Fast EMA crossed above Standard EMA - Long Position")
+
+alertcondition(is_short_signal,
+               title="Short Entry Alert",
+               message="Fast EMA crossed below Standard EMA - Short Position")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 情報表示パネル（エントリー価格＋価格差分追加）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var table info_table = table.new(position.top_right, 2, 10,
+                                  bgcolor=color.new(#000000, 75),
+                                  border_color=color.new(#FFFFFF, 50),
+                                  border_width=2)
+
+if barstate.islast
+    // ヘッダー行
+    table.cell(info_table, 0, 0, "INDICATOR", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+    table.cell(info_table, 1, 0, "VALUE", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+
+    // Fast EMA
+    table.cell(info_table, 0, 1, "Fast EMA", text_color=color.new(#0000FF, 0), text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 1, str.tostring(fast_ema, "#.##"), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Standard EMA
+    table.cell(info_table, 0, 2, "Standard EMA", text_color=color.new(#FF0000, 0), text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 2, str.tostring(standard_ema, "#.##"), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Position
+    table.cell(info_table, 0, 3, "Position", text_color=color.new(#FFFF00, 0), text_size=size.normal, text_halign=text.align_left)
+    position_text = in_long ? "LONG ▲" : in_short ? "SHORT ▼" : "NONE ■"
+    position_col = in_long ? color.new(#00FF00, 0) : in_short ? color.new(#FF0000, 0) : #808080
+    table.cell(info_table, 1, 3, position_text, text_color=position_col, text_size=size.large, text_halign=text.align_center)
+
+    // Entry Price
+    table.cell(info_table, 0, 4, "Entry Price", text_color=color.new(#00FFFF, 0), text_size=size.normal, text_halign=text.align_left)
+    entry_price_text = not na(entry_price) ? str.tostring(entry_price, "#.##") : "---"
+    table.cell(info_table, 1, 4, entry_price_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Price Difference（修正版）
+    table.cell(info_table, 0, 5, "Price Diff", text_color=color.new(#FFA500, 0), text_size=size.normal, text_halign=text.align_left)
+
+    // 価格差分と損益率を計算（事前に変数宣言）
+    price_diff = not na(entry_price) ? (close - entry_price) : 0.0
+    pnl_percent = not na(entry_price) and entry_price != 0 ? ((close - entry_price) / entry_price * 100) : 0.0
+
+    // 表示用変数を初期化（colorという単語を含まない変数名に変更）
+    diff_text = "---"
+    pnl_text = ""
+    text_col = #808080  // diff_color → text_col に変更
+
+    // ロング時とショート時で表示を調整
+    if in_long
+        // ロング：価格上昇でプラス
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        text_col := price_diff > 0 ? color.new(#00FF00, 0) : price_diff < 0 ? color.new(#FF0000, 0) : #808080
+    else if in_short
+        // ショート：価格下降でプラス（符号を反転）
+        price_diff := -price_diff
+        pnl_percent := -pnl_percent
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        text_col := price_diff > 0 ? color.new(#00FF00, 0) : price_diff < 0 ? color.new(#FF0000, 0) : #808080
+
+    diff_display = not na(entry_price) ? diff_text + " (" + pnl_text + ")" : "---"
+    table.cell(info_table, 1, 5, diff_display, text_color=text_col, text_size=size.normal, text_halign=text.align_right)
+
+    // Mode
+    table.cell(info_table, 0, 6, "Mode", text_color=color.new(#FFA500, 0), text_size=size.normal, text_halign=text.align_left)
+    mode_text = use_realtime ? "◉ REAL-TIME" : "○ BAR CLOSE"
+    mode_col = use_realtime ? color.new(#00FF00, 0) : color.new(#808080, 0)
+    table.cell(info_table, 1, 6, mode_text, text_color=mode_col, text_size=size.normal, text_halign=text.align_center)
+
+    // SL1: EMA Cross Base
+    table.cell(info_table, 0, 7, "SL1 (EMA Cross)", text_color=color.new(#FF0000, 0), text_size=size.normal, text_halign=text.align_left)
+    sl1_text = enable_sl1 and not na(sl1_price) ? str.tostring(sl1_price, "#.###") : "---"
+    sl1_status = enable_sl1 ? " (" + str.tostring(sl1_offset_percent, "#.###") + "%)" : " (OFF)"
+    table.cell(info_table, 1, 7, sl1_text + sl1_status, text_color=enable_sl1 ? #FFFFFF : #808080, text_size=size.normal, text_halign=text.align_right)
+
+    // SL2: Entry Price Base
+    table.cell(info_table, 0, 8, "SL2 (Entry Base)", text_color=color.new(#FF8800, 0), text_size=size.normal, text_halign=text.align_left)
+    sl2_text = enable_sl2 and not na(sl2_price) ? str.tostring(sl2_price, "#.###") : "---"
+    sl2_status = enable_sl2 ? " (" + str.tostring(sl2_offset_percent, "#.###") + "%)" : " (OFF)"
+    table.cell(info_table, 1, 8, sl2_text + sl2_status, text_color=enable_sl2 ? #FFFFFF : #808080, text_size=size.normal, text_halign=text.align_right)
+
+    // Distance to Nearest SL
+    table.cell(info_table, 0, 9, "Distance to SL", text_color=color.new(#FFFF00, 0), text_size=size.normal, text_halign=text.align_left)
+    distance_text = "---"
+    distance_col = #808080
+    if not no_position
+        nearest_sl = float(na)
+        if in_long
+            // ロングの場合、最も近い（高い）SLを選択
+            if enable_sl1 and enable_sl2
+                nearest_sl := math.max(sl1_price, sl2_price)
+            else if enable_sl1
+                nearest_sl := sl1_price
+            else if enable_sl2
+                nearest_sl := sl2_price
+            if not na(nearest_sl)
+                distance_pct = ((close - nearest_sl) / close) * 100
+                distance_text := str.tostring(distance_pct, "#.###") + "%"
+                distance_col := distance_pct > 0.2 ? color.new(#00FF00, 0) : distance_pct > 0.1 ? color.new(#FFFF00, 0) : color.new(#FF0000, 0)
+        else if in_short
+            // ショートの場合、最も近い（低い）SLを選択
+            if enable_sl1 and enable_sl2
+                nearest_sl := math.min(sl1_price, sl2_price)
+            else if enable_sl1
+                nearest_sl := sl1_price
+            else if enable_sl2
+                nearest_sl := sl2_price
+            if not na(nearest_sl)
+                distance_pct = ((nearest_sl - close) / close) * 100
+                distance_text := str.tostring(distance_pct, "#.###") + "%"
+                distance_col := distance_pct > 0.2 ? color.new(#00FF00, 0) : distance_pct > 0.1 ? color.new(#FFFF00, 0) : color.new(#FF0000, 0)
+    table.cell(info_table, 1, 9, distance_text, text_color=distance_col, text_size=size.normal, text_halign=text.align_right)
+
+// デバッグ用：エントリータイミングの可視化
+bgcolor(is_long_signal ? color.new(#00FF00, 90) : na, title="Long Signal BG")
+bgcolor(is_short_signal ? color.new(#FF0000, 90) : na, title="Short Signal BG")

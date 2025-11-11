@@ -1,0 +1,187 @@
+//@version=6
+strategy("Real-Time EMA Cross Strategy For Scalping v3",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         calc_on_every_tick=true,
+         process_orders_on_close=true,
+         pyramiding=0,
+         close_entries_rule="ANY")
+
+// EMA設定
+fast_ema_length = input.int(1, title="Fast EMA", minval=1)
+standard_ema_length = input.int(10, title="Standard EMA", minval=1)
+
+// リアルタイム実行設定
+use_realtime = input.bool(true, title="Real-time Execution", tooltip="Uncheck to execute only on bar close")
+
+// EMA計算
+fast_ema = ta.ema(close, fast_ema_length)
+standard_ema = ta.ema(close, standard_ema_length)
+
+// より正確なクロス判定
+is_long_signal = ta.crossover(fast_ema, standard_ema)
+is_short_signal = ta.crossunder(fast_ema, standard_ema)
+
+// リアルタイムモードの場合の追加条件
+if use_realtime and barstate.isconfirmed == false
+    is_long_signal := fast_ema > standard_ema and fast_ema[1] <= standard_ema[1]
+    is_short_signal := fast_ema < standard_ema and fast_ema[1] >= standard_ema[1]
+
+// ポジション状態
+in_long = strategy.position_size > 0
+in_short = strategy.position_size < 0
+no_position = strategy.position_size == 0
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// エントリー価格を記録する変数
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var float entry_price = na
+var string entry_type = "NONE"
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// エントリー・決済ロジック
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ロングシグナル時の処理
+if is_long_signal
+    if in_short
+        strategy.close("Short", comment="Short Exit→Long Entry", immediately=true)
+        entry_price := na
+    // ifブロックでエントリー
+    if true
+        strategy.entry("Long", strategy.long, comment="Long Entry")
+        // エントリー価格を記録
+        entry_price := close
+        entry_type := "LONG"
+
+// ショートシグナル時の処理
+if is_short_signal
+    if in_long
+        strategy.close("Long", comment="Long Exit→Short Entry", immediately=true)
+        entry_price := na
+    // ifブロックでエントリー
+    if true
+        strategy.entry("Short", strategy.short, comment="Short Entry")
+        // エントリー価格を記録
+        entry_price := close
+        entry_type := "SHORT"
+
+// ポジションがない場合はリセット
+if no_position
+    entry_price := na
+    entry_type := "NONE"
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ビジュアル表示
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// EMAラインの描画
+fast_ema_line = plot(fast_ema, color=color.new(color.blue, 0), linewidth=2, title="Fast EMA")
+standard_ema_line = plot(standard_ema, color=color.new(color.red, 0), linewidth=2, title="Standard EMA")
+
+// クロスエリアの塗りつぶし
+fill(fast_ema_line, standard_ema_line,
+     color=fast_ema > standard_ema ? color.new(color.green, 80) : color.new(color.red, 80),
+     title="EMA Zone")
+
+// シグナルマーカー
+plotshape(is_long_signal,
+          style=shape.triangleup,
+          location=location.belowbar,
+          color=color.new(color.green, 0),
+          size=size.small,
+          title="Long Signal",
+          text="L")
+
+plotshape(is_short_signal,
+          style=shape.triangledown,
+          location=location.abovebar,
+          color=color.new(color.red, 0),
+          size=size.small,
+          title="Short Signal",
+          text="S")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// アラート設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(is_long_signal,
+               title="Long Entry Alert",
+               message="Fast EMA crossed above Standard EMA - Long Position")
+
+alertcondition(is_short_signal,
+               title="Short Entry Alert",
+               message="Fast EMA crossed below Standard EMA - Short Position")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 情報表示パネル（エントリー価格＋価格差分追加）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var table info_table = table.new(position.top_right, 2, 7,
+                                  bgcolor=color.new(color.black, 75),
+                                  border_color=color.new(color.white, 50),
+                                  border_width=2)
+
+if barstate.islast
+    // ヘッダー行
+    table.cell(info_table, 0, 0, "INDICATOR", text_color=color.white, text_size=size.large, text_halign=text.align_center)
+    table.cell(info_table, 1, 0, "VALUE", text_color=color.white, text_size=size.large, text_halign=text.align_center)
+
+    // Fast EMA
+    table.cell(info_table, 0, 1, "Fast EMA", text_color=color.new(color.blue, 0), text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 1, str.tostring(fast_ema, "#.##"), text_color=color.white, text_size=size.normal, text_halign=text.align_right)
+
+    // Standard EMA
+    table.cell(info_table, 0, 2, "Standard EMA", text_color=color.new(color.red, 0), text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 2, str.tostring(standard_ema, "#.##"), text_color=color.white, text_size=size.normal, text_halign=text.align_right)
+
+    // Position
+    table.cell(info_table, 0, 3, "Position", text_color=color.new(color.yellow, 0), text_size=size.normal, text_halign=text.align_left)
+    position_text = in_long ? "LONG ▲" : in_short ? "SHORT ▼" : "NONE ■"
+    position_color = in_long ? color.new(color.green, 0) : in_short ? color.new(color.red, 0) : color.gray
+    table.cell(info_table, 1, 3, position_text, text_color=position_color, text_size=size.large, text_halign=text.align_center)
+
+    // Entry Price
+    table.cell(info_table, 0, 4, "Entry Price", text_color=color.new(color.cyan, 0), text_size=size.normal, text_halign=text.align_left)
+    entry_price_text = not na(entry_price) ? str.tostring(entry_price, "#.##") : "---"
+    table.cell(info_table, 1, 4, entry_price_text, text_color=color.white, text_size=size.normal, text_halign=text.align_right)
+
+    // Price Difference（修正版）
+    table.cell(info_table, 0, 5, "Price Diff", text_color=color.new(color.orange, 0), text_size=size.normal, text_halign=text.align_left)
+
+    // 価格差分と損益率を計算（事前に変数宣言）
+    float price_diff = not na(entry_price) ? (close - entry_price) : 0
+    float pnl_percent = not na(entry_price) and entry_price != 0 ? ((close - entry_price) / entry_price * 100) : 0
+
+    // 表示用変数を初期化
+    string diff_text = "---"
+    string pnl_text = ""
+    color diff_color = color.gray
+
+    // ロング時とショート時で表示を調整
+    if in_long
+        // ロング：価格上昇でプラス
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        diff_color := price_diff > 0 ? color.new(color.lime, 0) : price_diff < 0 ? color.new(color.red, 0) : color.gray
+    else if in_short
+        // ショート：価格下降でプラス（符号を反転）
+        price_diff := -price_diff
+        pnl_percent := -pnl_percent
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        diff_color := price_diff > 0 ? color.new(color.lime, 0) : price_diff < 0 ? color.new(color.red, 0) : color.gray
+
+    diff_display = not na(entry_price) ? diff_text + " (" + pnl_text + ")" : "---"
+    table.cell(info_table, 1, 5, diff_display, text_color=diff_color, text_size=size.normal, text_halign=text.align_right)
+
+    // Mode
+    table.cell(info_table, 0, 6, "Mode", text_color=color.new(color.orange, 0), text_size=size.normal, text_halign=text.align_left)
+    mode_text = use_realtime ? "◉ REAL-TIME" : "○ BAR CLOSE"
+    mode_color = use_realtime ? color.new(color.lime, 0) : color.new(color.gray, 0)
+    table.cell(info_table, 1, 6, mode_text, text_color=mode_color, text_size=size.normal, text_halign=text.align_center)
+
+// デバッグ用：エントリータイミングの可視化
+bgcolor(is_long_signal ? color.new(color.green, 90) : na, title="Long Signal BG")
+bgcolor(is_short_signal ? color.new(color.red, 90) : na, title="Short Signal BG")

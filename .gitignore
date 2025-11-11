@@ -1,0 +1,11 @@
+# 一時ファイル
+*.tmp
+*.bak
+*~
+
+# テストファイル
+test_*.txt
+
+# その他のファイル
+A1
+ema_cross_strategy.pine

@@ -1,0 +1,347 @@
+//@version=6
+indicator("EMA Cross Pro v1.0", overlay=true)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fast_ema_length = input.int(4, title="Fast EMA", minval=1, maxval=500)
+standard_ema_length = input.int(9, title="Standard EMA", minval=1, maxval=500)
+
+// 表示設定
+show_signals = input.bool(true, title="Show Cross Signals", tooltip="EMAクロスシグナルを表示")
+show_signal_vlines = input.bool(true, title="Show Signal Background", tooltip="シグナル発生時に背景色を表示")
+show_fill = input.bool(true, title="Show Fill Area", tooltip="EMA間の塗りつぶしを表示")
+show_sl1 = input.bool(true, title="Show SL1 Line", tooltip="EMA交差価格にSL1ラインを表示")
+show_sl2 = input.bool(true, title="Show SL2 Line", tooltip="SL1を基準としたストップロスラインを表示")
+show_tp1 = input.bool(true, title="Show TP1 Line", tooltip="最低利益保証ラインを表示")
+show_tp2 = input.bool(true, title="Show TP2 Line", tooltip="SL1と最高/最低価格の間の位置にラインを表示")
+show_sl_labels = input.bool(true, title="Show SL Labels on Chart", tooltip="水平線上にSL1/SL2/TP1/TP2ラベルを表示")
+
+// SL2設定（SL1からのストップロス）
+sl2_offset_percent = input.float(0.5, title="SL2 Offset from SL1 (%)", minval=0.001, step=0.001, tooltip="SL1からのオフセット%（小数点3位まで）")
+
+// TP1設定（最低利益保証）
+tp1_offset_percent = input.float(0.05, title="TP1 Offset from SL1 (%)", minval=0.001, step=0.001, tooltip="SL1からのオフセット%（小数点3位まで）")
+
+// TP2設定（SL1と最高/最低価格の間の位置）
+tp2_ratio = input.float(50.0, title="TP2 Position Ratio (%)", minval=0.1, maxval=100.0, step=0.1, tooltip="SL1と最高/最低価格の間の位置（%）")
+
+// ラベル位置設定（show_sl_labels=trueの場合のみ有効）
+label_bars_from_right = input.int(10, title="Label Position (bars from right)", minval=0, maxval=100, tooltip="画面右端からのバー数")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA計算
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fast_ema = ta.ema(close, fast_ema_length)
+standard_ema = ta.ema(close, standard_ema_length)
+
+// クロス判定
+is_long_signal = ta.crossover(fast_ema, standard_ema)
+is_short_signal = ta.crossunder(fast_ema, standard_ema)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ポジション追跡（シグナルベース）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var string current_position = "NONE"
+var float ema_cross_price = na  // EMA交差価格 (SL1)
+var float sl2_price = na        // ストップロスライン (SL2)
+var float tp1_price = na        // 最低利益保証ライン (TP1)
+var float tp2_price = na        // トレーリングライン (TP2)
+var float prev_tp2_price = na   // 前回のTP2価格
+var float signal_bar_close = na  // シグナル発生時のclose価格
+var float highest_price = na    // ロング時の最高価格
+var float lowest_price = na     // ショート時の最低価格
+
+// SLライン（水平線オブジェクト）
+var line sl1_line = na
+var line sl2_line = na
+var line tp1_line = na
+var line tp2_line = na
+
+// SLラベル（テキスト表示）
+var label sl1_label = na
+var label sl2_label = na
+var label tp1_label = na
+var label tp2_label = na
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// シグナル発生時の背景色描画
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ロングシグナル：薄い緑色の背景
+bgcolor(show_signal_vlines and is_long_signal ? color.new(#00FF00, 90) : na, title="Long Signal Background")
+
+// ショートシグナル：薄い赤色の背景
+bgcolor(show_signal_vlines and is_short_signal ? color.new(#FF0000, 90) : na, title="Short Signal Background")
+
+// ロングシグナル発生時
+if is_long_signal
+    current_position := "LONG"
+    // EMA交差価格を計算（2つのEMAの平均）
+    ema_cross_price := (fast_ema + standard_ema) / 2
+    signal_bar_close := close
+
+    // 最高価格を初期化
+    highest_price := high
+    lowest_price := na  // ショートの最低価格をリセット
+
+    // SL2計算（ロング：SL1より下に設定）
+    sl2_price := ema_cross_price * (1 - sl2_offset_percent / 100)
+
+    // TP1計算（ロング：SL1より上に設定）
+    tp1_price := ema_cross_price * (1 + tp1_offset_percent / 100)
+
+    // TP2関連をリセット
+    tp2_price := na
+    prev_tp2_price := na
+
+    // 古いラインを削除
+    if not na(sl1_line)
+        line.delete(sl1_line)
+    if not na(sl2_line)
+        line.delete(sl2_line)
+    if not na(tp1_line)
+        line.delete(tp1_line)
+    if not na(tp2_line)
+        line.delete(tp2_line)
+
+    // SL1ライン作成（赤色・右側に伸びる水平線）
+    if show_sl1
+        sl1_line := line.new(bar_index, ema_cross_price, bar_index + 1, ema_cross_price, color=#FF0000, width=2, style=line.style_solid, extend=extend.right)
+
+    // SL2ライン作成（青色・右側に伸びる水平線）
+    if show_sl2
+        sl2_line := line.new(bar_index, sl2_price, bar_index + 1, sl2_price, color=#4169E1, width=2, style=line.style_solid, extend=extend.right)
+
+    // TP1ライン作成（オレンジ色・右側に伸びる水平線）
+    if show_tp1
+        tp1_line := line.new(bar_index, tp1_price, bar_index + 1, tp1_price, color=#FF8800, width=2, style=line.style_solid, extend=extend.right)
+
+// ショートシグナル発生時
+if is_short_signal
+    current_position := "SHORT"
+    // EMA交差価格を計算（2つのEMAの平均）
+    ema_cross_price := (fast_ema + standard_ema) / 2
+    signal_bar_close := close
+
+    // 最低価格を初期化
+    lowest_price := low
+    highest_price := na  // ロングの最高価格をリセット
+
+    // SL2計算（ショート：SL1より上に設定）
+    sl2_price := ema_cross_price * (1 + sl2_offset_percent / 100)
+
+    // TP1計算（ショート：SL1より下に設定）
+    tp1_price := ema_cross_price * (1 - tp1_offset_percent / 100)
+
+    // TP2関連をリセット
+    tp2_price := na
+    prev_tp2_price := na
+
+    // 古いラインを削除
+    if not na(sl1_line)
+        line.delete(sl1_line)
+    if not na(sl2_line)
+        line.delete(sl2_line)
+    if not na(tp1_line)
+        line.delete(tp1_line)
+    if not na(tp2_line)
+        line.delete(tp2_line)
+
+    // SL1ライン作成（赤色・右側に伸びる水平線）
+    if show_sl1
+        sl1_line := line.new(bar_index, ema_cross_price, bar_index + 1, ema_cross_price, color=#FF0000, width=2, style=line.style_solid, extend=extend.right)
+
+    // SL2ライン作成（青色・右側に伸びる水平線）
+    if show_sl2
+        sl2_line := line.new(bar_index, sl2_price, bar_index + 1, sl2_price, color=#4169E1, width=2, style=line.style_solid, extend=extend.right)
+
+    // TP1ライン作成（オレンジ色・右側に伸びる水平線）
+    if show_tp1
+        tp1_line := line.new(bar_index, tp1_price, bar_index + 1, tp1_price, color=#FF8800, width=2, style=line.style_solid, extend=extend.right)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 最高/最低価格の更新
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if current_position == "LONG" and not na(highest_price)
+    // ロング時：最高価格を更新
+    if high > highest_price
+        highest_price := high
+
+if current_position == "SHORT" and not na(lowest_price)
+    // ショート時：最低価格を更新
+    if low < lowest_price
+        lowest_price := low
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TP2更新（毎バー実行）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 新しいTP2価格を計算
+float new_tp2_price = na
+
+if current_position == "LONG" and not na(highest_price) and not na(ema_cross_price)
+    // ロング：SL1と最高価格の間の指定%位置にTP2を設定
+    new_tp2_price := ema_cross_price + (highest_price - ema_cross_price) * (tp2_ratio / 100)
+else if current_position == "SHORT" and not na(lowest_price) and not na(ema_cross_price)
+    // ショート：SL1と最低価格の間の指定%位置にTP2を設定
+    new_tp2_price := ema_cross_price - (ema_cross_price - lowest_price) * (tp2_ratio / 100)
+
+// TP2価格が変更された場合のみライン更新
+if not na(new_tp2_price) and (na(prev_tp2_price) or new_tp2_price != prev_tp2_price)
+    tp2_price := new_tp2_price
+    prev_tp2_price := new_tp2_price
+
+    // 古いTP2ラインを削除
+    if not na(tp2_line)
+        line.delete(tp2_line)
+
+    // TP2ライン作成（紫色・右側に伸びる水平線）
+    if show_tp2
+        tp2_line := line.new(bar_index, tp2_price, bar_index + 1, tp2_price, color=#9370DB, width=2, style=line.style_solid, extend=extend.right)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ラベル更新
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.islast and show_sl_labels
+    // ラベル位置計算（画面右端からのオフセット）
+    label_position = bar_index - label_bars_from_right
+
+    // 古いラベルを削除
+    if not na(sl1_label)
+        label.delete(sl1_label)
+    if not na(sl2_label)
+        label.delete(sl2_label)
+    if not na(tp1_label)
+        label.delete(tp1_label)
+    if not na(tp2_label)
+        label.delete(tp2_label)
+
+    // SL1ラベル作成
+    if show_sl1 and not na(ema_cross_price)
+        sl1_label := label.new(label_position, ema_cross_price, text="SL1", style=label.style_label_center, color=#FF0000, textcolor=#FFFFFF, size=size.small)
+
+    // SL2ラベル作成
+    if show_sl2 and not na(sl2_price)
+        sl2_label := label.new(label_position, sl2_price, text="SL2", style=label.style_label_center, color=#4169E1, textcolor=#FFFFFF, size=size.small)
+
+    // TP1ラベル作成
+    if show_tp1 and not na(tp1_price)
+        tp1_label := label.new(label_position, tp1_price, text="TP1", style=label.style_label_center, color=#FF8800, textcolor=#FFFFFF, size=size.small)
+
+    // TP2ラベル作成
+    if show_tp2 and not na(tp2_price)
+        tp2_label := label.new(label_position, tp2_price, text="TP2", style=label.style_label_center, color=#9370DB, textcolor=#FFFFFF, size=size.small)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ビジュアル表示
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// EMAライン描画
+fast_ema_line = plot(fast_ema, color=#1E90FF, linewidth=2, title="Fast EMA")
+standard_ema_line = plot(standard_ema, color=#FF0000, linewidth=2, title="Standard EMA")
+
+// EMA間の塗りつぶし
+fill(fast_ema_line, standard_ema_line,
+     color=show_fill ? (fast_ema > standard_ema ? color.new(#00FF00, 85) : color.new(#FF0000, 85)) : na,
+     title="EMA Zone")
+
+// クロスシグナルマーカー
+plotshape(show_signals and is_long_signal,
+          style=shape.triangleup,
+          location=location.belowbar,
+          color=#00FF00,
+          size=size.small,
+          title="Long Signal",
+          text="L")
+
+plotshape(show_signals and is_short_signal,
+          style=shape.triangledown,
+          location=location.abovebar,
+          color=#FF0000,
+          size=size.small,
+          title="Short Signal",
+          text="S")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// アラート設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(is_long_signal, title="Long Cross Alert", message="Fast EMA crossed above Standard EMA")
+alertcondition(is_short_signal, title="Short Cross Alert", message="Fast EMA crossed below Standard EMA")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 情報パネル
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var table info_table = table.new(position.top_right, 2, 10, bgcolor=color.new(#000000, 75), border_color=color.new(#FFFFFF, 50), border_width=2)
+
+if barstate.islast
+    // ヘッダー
+    table.cell(info_table, 0, 0, "INDICATOR", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+    table.cell(info_table, 1, 0, "VALUE", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+
+    // Fast EMA
+    table.cell(info_table, 0, 1, "Fast EMA", text_color=#1E90FF, text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 1, str.tostring(fast_ema_length), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Standard EMA
+    table.cell(info_table, 0, 2, "Standard EMA", text_color=#FF0000, text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 2, str.tostring(standard_ema_length), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Position
+    table.cell(info_table, 0, 3, "Position", text_color=#FFFF00, text_size=size.normal, text_halign=text.align_left)
+    position_text = current_position == "LONG" ? "LONG ▲" : current_position == "SHORT" ? "SHORT ▼" : "NONE ■"
+    position_col = current_position == "LONG" ? #00FF00 : current_position == "SHORT" ? #FF0000 : #808080
+    table.cell(info_table, 1, 3, position_text, text_color=position_col, text_size=size.large, text_halign=text.align_center)
+
+    // SL2 (Stop Loss)
+    table.cell(info_table, 0, 4, "SL2 (Stop)", text_color=#4169E1, text_size=size.normal, text_halign=text.align_left)
+    sl2_text = not na(sl2_price) ? str.tostring(sl2_price, "#.###") : "---"
+    sl2_offset_text = not na(sl2_price) ? " (-" + str.tostring(sl2_offset_percent, "#.###") + "%)" : ""
+    table.cell(info_table, 1, 4, sl2_text + sl2_offset_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // SL1 (EMA Cross Price)
+    table.cell(info_table, 0, 5, "SL1 (Cross)", text_color=#FF0000, text_size=size.normal, text_halign=text.align_left)
+    sl1_text = not na(ema_cross_price) ? str.tostring(ema_cross_price, "#.###") : "---"
+    table.cell(info_table, 1, 5, sl1_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // TP1 (Profit Guarantee)
+    table.cell(info_table, 0, 6, "TP1 (Profit)", text_color=#FF8800, text_size=size.normal, text_halign=text.align_left)
+    tp1_text = not na(tp1_price) ? str.tostring(tp1_price, "#.###") : "---"
+    tp1_offset_text = not na(tp1_price) ? " (+" + str.tostring(tp1_offset_percent, "#.###") + "%)" : ""
+    table.cell(info_table, 1, 6, tp1_text + tp1_offset_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // TP2 (Mid Point)
+    table.cell(info_table, 0, 7, "TP2 (Mid)", text_color=#9370DB, text_size=size.normal, text_halign=text.align_left)
+    tp2_text = not na(tp2_price) ? str.tostring(tp2_price, "#.###") : "---"
+    tp2_ratio_text = not na(tp2_price) ? " (" + str.tostring(tp2_ratio, "#.#") + "%)" : ""
+    table.cell(info_table, 1, 7, tp2_text + tp2_ratio_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // High/Low Price
+    table.cell(info_table, 0, 8, "High/Low", text_color=#00FFFF, text_size=size.normal, text_halign=text.align_left)
+    high_low_text = current_position == "LONG" and not na(highest_price) ? str.tostring(highest_price, "#.###") : current_position == "SHORT" and not na(lowest_price) ? str.tostring(lowest_price, "#.###") : "---"
+    table.cell(info_table, 1, 8, high_low_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Price Difference (from SL1)
+    table.cell(info_table, 0, 9, "Diff from SL1", text_color=#00FFFF, text_size=size.normal, text_halign=text.align_left)
+
+    // 差分計算（SL1基準）
+    price_diff = not na(ema_cross_price) ? (close - ema_cross_price) : 0.0
+    pnl_percent = not na(ema_cross_price) and ema_cross_price != 0 ? ((close - ema_cross_price) / ema_cross_price * 100) : 0.0
+
+    diff_text = "---"
+    pnl_text = ""
+    text_col = #808080
+
+    if current_position == "LONG"
+        // ロング：価格上昇でプラス
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.###") + "%" : str.tostring(pnl_percent, "#.###") + "%"
+        text_col := price_diff > 0 ? #00FF00 : price_diff < 0 ? #FF0000 : #808080
+    else if current_position == "SHORT"
+        // ショート：価格下降でプラス（符号を反転）
+        price_diff := -price_diff
+        pnl_percent := -pnl_percent
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.###") + "%" : str.tostring(pnl_percent, "#.###") + "%"
+        text_col := price_diff > 0 ? #00FF00 : price_diff < 0 ? #FF0000 : #808080
+
+    diff_display = not na(ema_cross_price) ? diff_text + " (" + pnl_text + ")" : "---"
+    table.cell(info_table, 1, 9, diff_display, text_color=text_col, text_size=size.normal, text_halign=text.align_right)

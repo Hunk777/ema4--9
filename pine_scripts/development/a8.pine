@@ -1,0 +1,130 @@
+//@version=6
+indicator("EMA Cross Indicator v8", overlay=true)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fast_ema_length = input.int(4, title="Fast EMA", minval=1, maxval=500)
+standard_ema_length = input.int(9, title="Standard EMA", minval=1, maxval=500)
+
+// 表示設定
+show_signals = input.bool(true, title="Show Cross Signals", tooltip="EMAクロスシグナルを表示")
+show_fill = input.bool(true, title="Show Fill Area", tooltip="EMA間の塗りつぶしを表示")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA計算
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fast_ema = ta.ema(close, fast_ema_length)
+standard_ema = ta.ema(close, standard_ema_length)
+
+// クロス判定
+is_long_signal = ta.crossover(fast_ema, standard_ema)
+is_short_signal = ta.crossunder(fast_ema, standard_ema)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ポジション追跡（シグナルベース）
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var string current_position = "NONE"
+var float signal_price = na
+
+// ロングシグナル発生時
+if is_long_signal
+    current_position := "LONG"
+    signal_price := close
+
+// ショートシグナル発生時
+if is_short_signal
+    current_position := "SHORT"
+    signal_price := close
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ビジュアル表示
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// EMAライン描画
+fast_ema_line = plot(fast_ema, color=#0000FF, linewidth=2, title="Fast EMA")
+standard_ema_line = plot(standard_ema, color=#FF0000, linewidth=2, title="Standard EMA")
+
+// EMA間の塗りつぶし
+fill(fast_ema_line, standard_ema_line,
+     color=show_fill ? (fast_ema > standard_ema ? color.new(#00FF00, 85) : color.new(#FF0000, 85)) : na,
+     title="EMA Zone")
+
+// クロスシグナルマーカー（表示ON/OFFを条件に含める）
+plotshape(show_signals and is_long_signal,
+          style=shape.triangleup,
+          location=location.belowbar,
+          color=#00FF00,
+          size=size.small,
+          title="Long Signal",
+          text="L")
+
+plotshape(show_signals and is_short_signal,
+          style=shape.triangledown,
+          location=location.abovebar,
+          color=#FF0000,
+          size=size.small,
+          title="Short Signal",
+          text="S")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// アラート設定
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(is_long_signal, title="Long Cross Alert", message="Fast EMA crossed above Standard EMA")
+alertcondition(is_short_signal, title="Short Cross Alert", message="Fast EMA crossed below Standard EMA")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 情報パネル
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var table info_table = table.new(position.top_right, 2, 6, bgcolor=color.new(#000000, 75), border_color=color.new(#FFFFFF, 50), border_width=2)
+
+if barstate.islast
+    // ヘッダー
+    table.cell(info_table, 0, 0, "INDICATOR", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+    table.cell(info_table, 1, 0, "VALUE", text_color=#FFFFFF, text_size=size.large, text_halign=text.align_center)
+
+    // Fast EMA
+    table.cell(info_table, 0, 1, "Fast EMA", text_color=#0000FF, text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 1, str.tostring(fast_ema, "#.##"), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Standard EMA
+    table.cell(info_table, 0, 2, "Standard EMA", text_color=#FF0000, text_size=size.normal, text_halign=text.align_left)
+    table.cell(info_table, 1, 2, str.tostring(standard_ema, "#.##"), text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Position
+    table.cell(info_table, 0, 3, "Position", text_color=#FFFF00, text_size=size.normal, text_halign=text.align_left)
+    position_text = current_position == "LONG" ? "LONG ▲" : current_position == "SHORT" ? "SHORT ▼" : "NONE ■"
+    position_col = current_position == "LONG" ? #00FF00 : current_position == "SHORT" ? #FF0000 : #808080
+    table.cell(info_table, 1, 3, position_text, text_color=position_col, text_size=size.large, text_halign=text.align_center)
+
+    // Signal Price
+    table.cell(info_table, 0, 4, "Signal Price", text_color=#00FFFF, text_size=size.normal, text_halign=text.align_left)
+    signal_price_text = not na(signal_price) ? str.tostring(signal_price, "#.##") : "---"
+    table.cell(info_table, 1, 4, signal_price_text, text_color=#FFFFFF, text_size=size.normal, text_halign=text.align_right)
+
+    // Price Difference
+    table.cell(info_table, 0, 5, "Price Diff", text_color=#FFA500, text_size=size.normal, text_halign=text.align_left)
+
+    // 差分計算
+    price_diff = not na(signal_price) ? (close - signal_price) : 0.0
+    pnl_percent = not na(signal_price) and signal_price != 0 ? ((close - signal_price) / signal_price * 100) : 0.0
+
+    diff_text = "---"
+    pnl_text = ""
+    text_col = #808080
+
+    if current_position == "LONG"
+        // ロング：価格上昇でプラス
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        text_col := price_diff > 0 ? #00FF00 : price_diff < 0 ? #FF0000 : #808080
+    else if current_position == "SHORT"
+        // ショート：価格下降でプラス（符号を反転）
+        price_diff := -price_diff
+        pnl_percent := -pnl_percent
+        diff_text := price_diff > 0 ? "+" + str.tostring(price_diff, "#.##") : str.tostring(price_diff, "#.##")
+        pnl_text := pnl_percent > 0 ? "+" + str.tostring(pnl_percent, "#.##") + "%" : str.tostring(pnl_percent, "#.##") + "%"
+        text_col := price_diff > 0 ? #00FF00 : price_diff < 0 ? #FF0000 : #808080
+
+    diff_display = not na(signal_price) ? diff_text + " (" + pnl_text + ")" : "---"
+    table.cell(info_table, 1, 5, diff_display, text_color=text_col, text_size=size.normal, text_halign=text.align_right)
